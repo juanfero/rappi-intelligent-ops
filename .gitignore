@@ -1,0 +1,23 @@
+cat > .gitignore <<'GIT'
+# Python/venv
+.venv/
+__pycache__/
+*.pyc
+
+# Entorno/secretos
+.env
+*.env
+
+# Datos y artefactos
+data/
+*.duckdb
+*.parquet
+
+# Streamlit/otros
+.streamlit/
+
+# OS/IDE
+.DS_Store
+.vscode/
+.idea/
+GIT

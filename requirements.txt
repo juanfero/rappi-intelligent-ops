@@ -1,0 +1,24 @@
+# Core data & performance
+polars>=1.5.0
+duckdb>=1.0.0
+pyarrow>=17.0.0
+pandas>=2.2.0
+openpyxl>=3.1.2
+
+# LLM + parsing + embeddings
+openai>=1.40.0
+pydantic>=2.6.0
+tiktoken>=0.7.0
+faiss-cpu>=1.8.0
+
+# API + UI
+fastapi>=0.111.0
+uvicorn[standard]>=0.30.0
+streamlit>=1.36.0
+plotly>=5.22.0
+
+# Stats / ML liviano para tendencias & correlaciones
+numpy>=1.26.0
+scipy>=1.12.0
+scikit-learn>=1.4.0
+
