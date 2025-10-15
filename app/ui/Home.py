@@ -6,7 +6,7 @@ st.set_page_config(page_title="Rappi Intelligent Ops", layout="wide")
 st.title("Rappi Intelligent Ops - Demo")
 
 # Base de la API: cambia el puerto si lanzaste uvicorn en otro (8001, etc.)
-API_BASE = os.getenv("API_BASE", "http://127.0.0.1:8000")  # <- usa este
+API_BASE = os.getenv("API_BASE", "http://127.0.0.1:8001")  # <- usa este
 
 with st.sidebar:
     st.header("Filtros")

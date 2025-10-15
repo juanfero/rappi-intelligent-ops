@@ -1,13 +1,24 @@
 from fastapi import FastAPI
-from src.config import ENV, LOG_LEVEL
-from app.api.routers.metrics import router as metrics_router
+from pydantic import BaseModel
+from src.bot.memory import Memory
+from src.bot.parser import to_spec_llm, to_spec
+from src.bot.executor import execute
 
-app = FastAPI(title="Rappi Intelligent Ops API")
+app = FastAPI(title="Rappi Intelligent Ops - Chat API")
+MEM = Memory()
+
+class ChatIn(BaseModel):
+    question: str
+    use_llm: bool = True
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "env": ENV, "log_level": LOG_LEVEL}
+    return {"status":"ok"}
 
-# 👉 registra las rutas
-app.include_router(metrics_router)
-
+@app.post("/chat")
+def chat(inp: ChatIn):
+    memory = MEM.get()
+    spec = to_spec_llm(inp.question, memory) if inp.use_llm else to_spec(inp.question, memory)
+    MEM.update_from_spec(spec)
+    result = execute(spec)
+    return {"spec": spec.model_dump(), "result": result}
