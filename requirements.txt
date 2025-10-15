@@ -4,8 +4,9 @@ duckdb>=1.0.0
 pyarrow>=17.0.0
 pandas>=2.2.0
 openpyxl>=3.1.2
+fastexcel>=0.7.0
 
-# LLM + parsing + embeddings
+# LLM + parsing + embeddings (opcionales)
 openai>=1.40.0
 pydantic>=2.6.0
 tiktoken>=0.7.0
@@ -16,6 +17,8 @@ fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 streamlit>=1.36.0
 plotly>=5.22.0
+requests>=2.32.0
+python-dotenv>=1.0.1
 
 # Stats / ML liviano para tendencias & correlaciones
 numpy>=1.26.0
