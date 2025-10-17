@@ -1,0 +1,142 @@
+# catalog/metrics.yaml
+version: 1
+metrics:
+  orders:
+    label: "Orders"
+    data_name: "Orders"          # como aparece en la columna METRIC
+    description: "Cantidad de órdenes."
+    synonyms: ["orders","ordenes","órdenes","pedidos","num orders","numero de ordenes","número de órdenes","cantidad de pedidos"]
+    value_type: "count"          # count | ratio | currency
+    range_hint: null             # null | [0,1]
+    higher_is_better: true
+    agg_default: "sum"           # para ventana: sum por defecto
+
+  gross_profit_ue:
+    label: "Gross Profit UE"
+    data_name: "Gross Profit UE"
+    description: "Margen bruto de ganancia / Total de órdenes (margen por orden)."
+    synonyms: ["gross profit ue","gp ue","margen por orden","gross profit per order","gross profit","gp_ue","gp/ue"]
+    value_type: "currency"
+    range_hint: null
+    higher_is_better: true
+    agg_default: "mean"
+
+  lead_penetration:
+    label: "Lead Penetration"
+    data_name: "Lead Penetration"
+    description: "Tiendas habilitadas en Rappi / (tiendas prospectadas + habilitadas + salieron de Rappi)."
+    synonyms: ["lead penetration","penetracion de leads","penetración de leads","penetracion de clientes","penetración de clientes","lp","lead pen","% lead","penetracion","penetration"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  perfect_orders:
+    label: "Perfect Orders"
+    data_name: "Perfect Orders"
+    description: "Órdenes sin cancelaciones ni defectos o demora / Total de órdenes."
+    synonyms: ["perfect orders","ordenes perfectas","órdenes perfectas","perfect order","pedido perfecto","pedidos perfectos","po","% po"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  pro_adoption:
+    label: "Pro Adoption"
+    data_name: "Pro Adoption"
+    description: "Usuarios suscripción Pro / Total usuarios de Rappi."
+    synonyms: ["pro adoption","adopcion pro","adopción pro","usuarios pro"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  pro_users_breakeven:
+    label: "% PRO Users Who Breakeven"
+    data_name: "% PRO Users Who Breakeven"
+    description: "Usuarios Pro cuyo valor generado cubre el costo de su membresía / Total usuarios suscripción Pro."
+    synonyms: ["breakeven pro","usuarios pro que compensan","% pro users who breakeven","pro breakeven"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  sessions_optimal_assortment:
+    label: "% Restaurants Sessions With Optimal Assortment"
+    data_name: "% Restaurants Sessions With Optimal Assortment"
+    description: "Sesiones con un mínimo de 40 restaurantes / Total de sesiones."
+    synonyms: ["optimal assortment","sesiones con surtido optimo","surtido óptimo","% restaurants sessions with optimal assortment"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  mltv_top_verticals_adoption:
+    label: "MLTV Top Verticals Adoption"
+    data_name: "MLTV Top Verticals Adoption"
+    description: "Usuarios con órdenes en diferentes verticales (restaurants, super, pharmacy, liquors) / Total usuarios."
+    synonyms: ["mltv top verticals adoption","adopcion verticales","adopción verticales","verticales top"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  non_pro_ptc_to_op:
+    label: "Non-Pro PTC > OP"
+    data_name: "Non-Pro PTC > OP"
+    description: "Conversión usuarios No Pro de 'Proceed to Checkout' a 'Order Placed'."
+    synonyms: ["non pro ptc > op","ptc a op no pro","conversion checkout a orden no pro"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  restaurants_markdowns_gmv:
+    label: "Restaurants Markdowns / GMV"
+    data_name: "Restaurants Markdowns / GMV"
+    description: "Descuentos totales en órdenes de restaurantes / Total GMV restaurantes."
+    synonyms: ["markdowns gmv restaurantes","descuentos/gmv restaurantes","restaurants markdowns / gmv"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: false        # en general menos markdowns/GMV es mejor
+    agg_default: "mean"
+
+  rest_ss_to_atc_cvr:
+    label: "Restaurants SS > ATC CVR"
+    data_name: "Restaurants SS > ATC CVR"
+    description: "Conversión en restaurantes de 'Select Store' a 'Add to Cart'."
+    synonyms: ["ss a atc restaurantes","select store a add to cart restaurantes","ss > atc cvr restaurantes"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  rest_sst_to_ss_cvr:
+    label: "Restaurants SST > SS CVR"
+    data_name: "Restaurants SST > SS CVR"
+    description: "Usuarios que tras 'Select Store Type' (SST) seleccionan una tienda en la lista (SS) en restaurantes."
+    synonyms: ["sst a ss restaurantes","select store type a select store restaurantes","sst > ss cvr restaurantes"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  retail_sst_to_ss_cvr:
+    label: "Retail SST > SS CVR"
+    data_name: "Retail SST > SS CVR"
+    description: "Usuarios que tras SST seleccionan una tienda (SS) en retail/supermercados."
+    synonyms: ["sst a ss retail","sst > ss cvr retail","supermercados sst a ss"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
+
+  turbo_adoption:
+    label: "Turbo Adoption"
+    data_name: "Turbo Adoption"
+    description: "Usuarios que compran en Turbo / usuarios con Turbo disponible."
+    synonyms: ["turbo adoption","adopcion turbo","adopción turbo","usuarios turbo"]
+    value_type: "ratio"
+    range_hint: [0,1]
+    higher_is_better: true
+    agg_default: "mean"
