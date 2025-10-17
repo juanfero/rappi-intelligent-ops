@@ -3,50 +3,190 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Optional, List, Dict
+import unicodedata
+from functools import lru_cache
+from pathlib import Path
+from typing import Optional, List, Dict, Tuple
 
 from .schema import AnalyticsSpec, Filters, Ops, TimeSpec
 
+try:
+    import duckdb  # type: ignore
+except Exception:  # pragma: no cover - si duckdb no está instalado aún
+    duckdb = None
+
 # ---------------------------------------------------------------------
 # Diccionario de métricas (canónicas) y sus sinónimos en minúsculas
+# (recuerda que normalize() quita acentos → incluye versiones con/sin tilde)
 # ---------------------------------------------------------------------
 METRIC_SYNONYMS: Dict[str, List[str]] = {
     "Lead Penetration": [
-        "lead penetration", "penetración de leads", "penetracion de leads",
-        "lp", "lead pen", "% lead", "penetracion", "penetration"
+        "lead penetration",
+        "penetracion de leads", "penetración de leads",
+        "penetracion de clientes potenciales", "penetración de clientes potenciales",
+        "penetracion de clientes", "penetración de clientes",
+        "penetracion de usuarios", "penetración de usuarios",
+        "lp", "lead pen", "% lead", "penetracion", "penetration",
     ],
     "Perfect Orders": [
-        "perfect orders", "ordenes perfectas", "órdenes perfectas",
-        "perfect order", "po", "% po", "pedidos perfectos"
+        "perfect orders",
+        "ordenes perfectas", "órdenes perfectas",
+        "perfect order", "pedido perfecto", "pedidos perfectos",
+        "cumplimiento de pedido perfecto", "nivel de cumplimiento de pedido perfecto",
+        "po", "% po",
     ],
     "Gross Profit UE": [
-        "gross profit ue", "gp ue", "margen por orden", "gross profit per order",
+        "gross profit ue", "gp ue",
+        "margen por orden", "gross profit per order",
         "gross profit", "gp_ue", "gp/ue"
     ],
     # Canónico para conteo de órdenes. Si en tu data se llama distinto,
-    # puedes mapearlo aquí (ej. "Total Orders").
+    # puedes mapearlo abajo (METRIC_ALIASES_TO_DATA).
     "Orders": [
-        "orders", "órdenes", "ordenes", "pedidos",
-        "num orders", "número de órdenes", "numero de ordenes",
-        "cantidad de órdenes", "cantidad de pedidos"
+        "orders", "ordenes", "órdenes", "pedidos",
+        "num orders", "numero de ordenes", "número de órdenes",
+        "cantidad de ordenes", "cantidad de órdenes", "cantidad de pedidos"
     ],
 }
 
 # Si en tu parquet la métrica de órdenes tiene otro nombre,
 # mapea aquí el canónico "Orders" -> "NombreRealEnTuData".
-# Si no necesitas alias, deja "Orders":"Orders".
 METRIC_ALIASES_TO_DATA: Dict[str, str] = {
     "Lead Penetration": "Lead Penetration",
     "Perfect Orders": "Perfect Orders",
     "Gross Profit UE": "Gross Profit UE",
-    "Orders": "Orders",            # cámbialo a "Total Orders" si así se llama en tu data
+    "Orders": "Orders",  # cámbialo a "Total Orders" si así se llama en tu data
 }
 
 # ---------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------
+SPANISH_NUMBER_WORDS: Dict[str, int] = {
+    "uno": 1, "una": 1,
+    "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6,
+    "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11, "doce": 12,
+    "veinte": 20,
+}
+NUMBER_WORD_PATTERN = "|".join(sorted(SPANISH_NUMBER_WORDS.keys(), key=len, reverse=True))
+
+def _strip_accents(text: str) -> str:
+    return "".join(c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn")
+
 def normalize(text: str) -> str:
-    return re.sub(r"\s+", " ", text.lower()).strip()
+    # normaliza a minúsculas, quita acentos y colapsa espacios
+    text = _strip_accents(text.lower())
+    return re.sub(r"\s+", " ", text).strip()
+
+# --- comparativos: orden asc/desc y "top N"/"peores N" ---
+_DESC_TRIGGERS = {"mayor", "maximo", "mas alto", "top", "superior", "mejor", "highest", "max"}
+_ASC_TRIGGERS  = {"menor", "minimo", "mas bajo", "peor", "peores", "lowest", "min", "inferior", "bottom"}
+_MONTHS = {"enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"}
+
+def _is_month_ctx(q: str) -> bool:
+    t = normalize(q)
+    # si aparece "mayo" en contexto de mes, no lo tratamos como "mayor"
+    return (" mayo " in f" {t} ") and any(m in t for m in _MONTHS)
+
+def decide_order_and_n(q: str) -> Tuple[str, Optional[int]]:
+    """
+    Devuelve ('asc'|'desc', top_k|None) a partir de comparativos en ES:
+    - top/bottom N (dígitos o palabra)
+    - mejores/peores N
+    - mayor/menor, mas alto/mas bajo...
+    - tolera 'el mayo'≈'mayor' salvo contexto de mes
+    """
+    qn = normalize(q)
+
+    # top/bottom con dígitos
+    m = re.search(r"\b(top|bottom)\s+(\d+)\b", qn)
+    if m:
+        order = "desc" if m.group(1) == "top" else "asc"
+        return order, int(m.group(2))
+
+    # top/bottom con palabra número
+    m = re.search(r"\b(top|bottom)\s+([a-z]+)\b", qn)
+    if m and m.group(2) in SPANISH_NUMBER_WORDS:
+        order = "desc" if m.group(1) == "top" else "asc"
+        return order, SPANISH_NUMBER_WORDS[m.group(2)]
+
+    # “las/los 5 mejores/peores/mayores/menores”
+    m = re.search(r"\b(las|los)\s+(\d+)\s+(mejores|peores|mayores|menores)\b", qn)
+    if m:
+        order = "desc" if ("mejor" in m.group(3) or "mayor" in m.group(3)) else "asc"
+        return order, int(m.group(2))
+
+    # disparadores de orden
+    desc = any(w in qn for w in _DESC_TRIGGERS)
+    asc  = any(w in qn for w in _ASC_TRIGGERS)
+
+    # typo “el mayo”≈“mayor” si NO estamos en contexto de mes
+    if not _is_month_ctx(q) and " mayo " in f" {qn} ":
+        desc = True
+
+    if asc and desc:
+        # prioriza peores/menor/bottom si hay conflicto (“top peores 5” ⇒ ASC)
+        if any(w in qn for w in ["peor","peores","menor","menores","mas bajo","bottom"]):
+            return "asc", None
+        return "desc", None
+    if desc: return "desc", None
+    if asc:  return "asc", None
+
+    # default seguro → desc
+    return "desc", None
+
+@lru_cache(maxsize=1)
+def _load_geo_catalog() -> Tuple[Dict[str, Tuple[str, Optional[str], Optional[str]]],
+                                 Dict[str, Tuple[str, Optional[str]]],
+                                 Dict[str, str]]:
+    """
+    Devuelve diccionarios normalizados → valores reales para zonas, ciudades y países.
+    Usa DuckDB si está disponible; si no, retorna catálogos mínimos.
+    """
+    zone_index: Dict[str, Tuple[str, Optional[str], Optional[str]]] = {}
+    city_index: Dict[str, Tuple[str, Optional[str]]] = {}
+    country_index: Dict[str, str] = {}
+
+    if duckdb is None:
+        return zone_index, city_index, country_index
+
+    db_path = Path("data/processed/warehouse.duckdb")
+    if not db_path.exists():
+        return zone_index, city_index, country_index
+
+    try:
+        con = duckdb.connect(str(db_path), read_only=True)
+    except Exception:
+        return zone_index, city_index, country_index
+
+    try:
+        df = con.execute(
+            "SELECT DISTINCT COUNTRY, CITY, ZONE FROM zone_weekly_metrics"
+        ).df()
+    except Exception:
+        con.close()
+        return zone_index, city_index, country_index
+
+    con.close()
+
+    for _, row in df.iterrows():
+        country = row.get("COUNTRY")
+        city = row.get("CITY")
+        zone = row.get("ZONE")
+        if isinstance(zone, str) and zone.strip():
+            zone_index[normalize(zone)] = (zone, city if isinstance(city, str) else None,
+                                           country if isinstance(country, str) else None)
+        if isinstance(city, str) and city.strip():
+            city_index.setdefault(normalize(city), (city, country if isinstance(country, str) else None))
+        if isinstance(country, str) and country.strip():
+            country_index.setdefault(normalize(country), country)
+
+    # Alias manuales relevantes (ahora con NOMBRES de país, no códigos)
+    city_index.setdefault("cdmx", ("Ciudad de Mexico", "Mexico"))
+    city_index.setdefault("mexico city", ("Ciudad de Mexico", "Mexico"))
+    city_index.setdefault("bogota", ("Bogota", "Colombia"))
+    zone_index.setdefault("chapinero", ("Chapinero", "Bogota", "Colombia"))
+
+    return zone_index, city_index, country_index
 
 def match_metric(q: str) -> Optional[str]:
     """Devuelve el nombre canónico de la métrica si la encuentra."""
@@ -70,47 +210,108 @@ def normalize_canonical_metric_for_data(canonical: str) -> str:
     return METRIC_ALIASES_TO_DATA.get(canonical, canonical)
 
 def extract_country(q: str) -> Optional[str]:
-    countries = {
-        "colombia": "CO", "méxico": "MX", "mexico": "MX", "perú": "PE", "peru": "PE",
-        "chile": "CL", "argentina": "AR", "brasil": "BR", "uruguay": "UY", "ecuador": "EC",
-    }
+    """
+    Prioriza nombres de país exactamente como existen en tu data (catálogo DuckDB).
+    Si no hay match, usa un diccionario de respaldo mapeando a NOMBRES (no códigos).
+    """
     qn = normalize(q)
-    for k, code in countries.items():
+
+    # 1) Prioriza catálogo real (nombres tal cual están en la tabla)
+    _, _, country_index = _load_geo_catalog()
+    for norm_name, country in country_index.items():
+        if norm_name and norm_name in qn:
+            return country
+
+    # 2) Fallback: diccionario → NOMBRES (no códigos)
+    countries_by_name = {
+        "colombia": "Colombia",
+        "mexico": "Mexico",
+        "peru": "Peru",
+        "chile": "Chile",
+        "argentina": "Argentina",
+        "brasil": "Brasil",
+        "uruguay": "Uruguay",
+        "ecuador": "Ecuador",
+    }
+    for k, name in countries_by_name.items():
         if k in qn:
-            return code
+            return name
     return None
+
+def extract_location(q: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    """
+    Devuelve (country, city, zone) siempre usando NOMBRES de país
+    (consistentes con la columna COUNTRY en tu data).
+    """
+    qn = normalize(q)
+    zones, cities, _ = _load_geo_catalog()
+
+    zone_match = next((vals for key, vals in zones.items() if key and key in qn), None)
+    if zone_match:
+        zone, city, country = zone_match
+        return country, city, zone
+
+    city_match = next((vals for key, vals in cities.items() if key and key in qn), None)
+    if city_match:
+        city, country = city_match
+        return country, city, None
+
+    return None, None, None
 
 def extract_zone_type(q: str) -> Optional[str]:
     qn = normalize(q)
-    if "wealthy" in qn or "rica" in qn:
+
+    has_wealthy = any(w in qn for w in ["wealthy", "rica", "altas rentas"])
+    has_non_wealthy = any(w in qn for w in ["non wealthy", "non-wealthy", "no rica", "popular"])
+    if has_wealthy and has_non_wealthy:
+        return None
+    if has_wealthy:
         return "Wealthy"
-    if "non wealthy" in qn or "non-wealthy" in qn or "no rica" in qn or "popular" in qn:
-        return "Non-Wealthy"
+    if has_non_wealthy:
+        # usamos sin guion para ser más robustos ante bases con/ sin guion
+        return "Non Wealthy"
     return None
 
+def mentions_zone_segments(q: str) -> bool:
+    qn = normalize(q)
+    return any(w in qn for w in ["wealthy", "non wealthy", "non-wealthy", "rica", "no rica", "popular"])
+
 def extract_topk(q: str) -> Optional[int]:
-    # "top 5" / "mejores 10" / "5 zonas"
-    m = re.search(r"\b(top|mejores?)\s+(\d+)\b", normalize(q))
+    # "top 5" / "mejores 10" / "peores 3" / "bottom 3" / "top cinco" / "5 zonas"
+    nq = normalize(q)
+    m = re.search(r"\b(top|bottom|mejores?|peores?)\s+(\d+)\b", nq)
     if m:
         return int(m.group(2))
-    m2 = re.search(r"\b(\d+)\s+zonas?\b", normalize(q))
+    m2 = re.search(r"\b(\d+)\s+zonas?\b", nq)
     if m2:
         return int(m2.group(1))
+    # palabra número
+    m3 = re.search(rf"\b(top|bottom|mejores?|peores?)\s+({NUMBER_WORD_PATTERN})\b", nq)
+    if m3:
+        return SPANISH_NUMBER_WORDS[m3.group(2)]
     return None
 
 def ask_is_this_week(q: str) -> bool:
     qn = normalize(q)
-    return any(w in qn for w in ["esta semana", "semana actual", "l0w"])
+    return any(w in qn for w in ["esta semana", "semana actual"])
 
 def ask_last_n_weeks(q: str) -> Optional[int]:
-    m = re.search(r"últim[oa]s?\s+(\d+)\s+semanas?", normalize(q))
-    return int(m.group(1)) if m else None
+    qn = normalize(q)
+    # acepta con y sin tilde: ultimas/últimas
+    m = re.search(r"(ultim[oa]s?|últim[oa]s?)\s+(\d+)\s+semanas?", qn)
+    if m:
+        return int(m.group(2))
+    # palabra número (“ultimas cinco semanas”)
+    m2 = re.search(rf"(ultim[oa]s?|últim[oa]s?)\s+({NUMBER_WORD_PATTERN})\s+semanas?", qn)
+    if m2:
+        return SPANISH_NUMBER_WORDS[m2.group(2)]
+    return None
 
 def detect_task(q: str) -> str:
     qn = normalize(q)
     if any(w in qn for w in ["compara", "comparar", "diferencia entre"]):
         return "compare"
-    if any(w in qn for w in ["evolución", "tendencia", "trend"]):
+    if any(w in qn for w in ["evolucion", "tendencia", "trend"]):
         return "trend"
     if any(w in qn for w in ["promedio", "media", "suma", "total"]):
         return "aggregate"
@@ -118,9 +319,9 @@ def detect_task(q: str) -> str:
         return "multivariable"
     if any(w in qn for w in ["crecen", "crecimiento", "aumentan", "suben"]):
         return "inference"
-    if "zonas problem" in qn:
+    if "zonas problem" in qn or "problematic" in qn:
         return "contextual"
-    if any(w in qn for w in ["top", "mayor", "menor", "mejores", "peores"]):
+    if any(w in qn for w in ["top", "bottom", "mayor", "menor", "mejores", "peores"]):
         return "filter"
     return "filter"
 
@@ -128,11 +329,28 @@ def detect_task(q: str) -> str:
 # Reglas → AnalyticsSpec
 # ---------------------------------------------------------------------
 def to_spec(question: str, memory: dict) -> AnalyticsSpec:
+    # métrica
     canonical_metric = match_metric(question) or "Orders"  # fallback seguro
+
+    # intent y ubicación
     task = detect_task(question)
-    country = extract_country(question) or memory.get("country")
+    detected_country = extract_country(question)
+    loc_country, loc_city, loc_zone = extract_location(question)
+
+    # FIX 1: NO usar fallback de memoria para país (evita “país pegado”)
+    country = (loc_country or detected_country)
+
+    # ciudad/zona sí pueden retomarse de memoria, si aplicara a tu UX
+    city = loc_city or memory.get("city")
+    zone = loc_zone or memory.get("zone")
     zone_type = extract_zone_type(question) or memory.get("zone_type")
+    segment_mentioned = mentions_zone_segments(question)
+
+    # top-k y orden
     topk = extract_topk(question)
+    order, n_from_text = decide_order_and_n(question)
+    if topk is None and n_from_text:
+        topk = n_from_text
 
     # tiempo
     time_range = "L0W" if ask_is_this_week(question) else "L8W-L0W"
@@ -144,8 +362,10 @@ def to_spec(question: str, memory: dict) -> AnalyticsSpec:
     if task == "aggregate":
         group_by = ["country"]
     elif task == "compare":
-        group_by = ["zone_type"] if zone_type else ["zone"]
-    elif task in ("trend", "multivariable", "inference", "contextual"):
+        group_by = ["zone_type"] if segment_mentioned else ["zone"]
+    elif task == "trend":
+        group_by = ["week"]  # clave para series temporales
+    elif task in ("multivariable", "inference", "contextual"):
         group_by = ["zone"]
     else:
         group_by = ["zone"]
@@ -156,19 +376,24 @@ def to_spec(question: str, memory: dict) -> AnalyticsSpec:
     if task == "trend":
         visualization = "line"
 
-    # arma spec base
+    # arma spec base (añadimos explicit_country al contexto)
+    explicit_country = bool(country)
     spec = AnalyticsSpec(
         task=task,
         metrics=[normalize_canonical_metric_for_data(canonical_metric)],
-        filters=Filters(country=country, zone_type=zone_type),
+        filters=Filters(country=country, city=city, zone=zone, zone_type=zone_type),
         group_by=group_by,
         time=TimeSpec(
             range=time_range,
             compare_to="prev_week" if "semana pasada" in normalize(question) else "none",
         ),
-        ops=Ops(top_k=topk, agg="mean" if "promedio" in normalize(question) else None),
+        ops=Ops(
+            top_k=topk,
+            agg="mean" if "promedio" in normalize(question) else None,
+            order=order  # "asc" | "desc"
+        ),
         visualization=visualization,
-        context=memory or {},
+        context={**(memory or {}), "explicit_country": explicit_country},
     )
 
     # ---------------------------
@@ -182,13 +407,24 @@ def to_spec(question: str, memory: dict) -> AnalyticsSpec:
             normalize_canonical_metric_for_data("Lead Penetration"),
             normalize_canonical_metric_for_data("Perfect Orders"),
         ]
+        try:
+            setattr(spec.ops, "high_low", {
+                "high": {"metric": normalize_canonical_metric_for_data("Lead Penetration"), "p": 0.70},
+                "low":  {"metric": normalize_canonical_metric_for_data("Perfect Orders"),   "p": 0.30},
+            })
+        except Exception:
+            pass
 
-    # Inference (crecimiento en órdenes): fuerza Orders y 5 semanas
+    # Inference (crecimiento en órdenes): fuerza Orders y 5 semanas si no vino explícito
     if spec.task == "inference" or ("orden" in qn or "orders" in qn or "pedidos" in qn):
-        if any(w in qn for w in ["crec", "aument", "sub"]):
+        if any(w in qn for w in ["crec", "crecim", "aument", "sub"]):
             spec.metrics = [normalize_canonical_metric_for_data("Orders")]
             if not ask_last_n_weeks(question):
                 spec.time.range = "L5W-L0W"
+
+    # Limpieza final: si agrupas por país, NO arrastres filtro de país
+    if spec.group_by and "country" in (spec.group_by or []):
+        spec.filters.country = None
 
     return spec
 
@@ -217,23 +453,51 @@ def to_spec_llm(question: str, memory: dict) -> AnalyticsSpec:
         data = loads(resp.output_text)
         spec = AnalyticsSpec(**data)
 
-        # Aplica los mismos overrides por si el LLM no los respetó
-        # (reconstruimos un spec final fusionando reglas y LLM)
+        # Aplica los mismos overrides/normalizaciones del parser por reglas
         fallback = to_spec(question, memory)
-        # Conserva lo del LLM pero re-aplica las reglas críticas
+
+        # Reglas críticas:
         if spec.task == "multivariable":
             spec.metrics = [
                 normalize_canonical_metric_for_data("Lead Penetration"),
                 normalize_canonical_metric_for_data("Perfect Orders"),
             ]
+            try:
+                setattr(spec.ops, "high_low", {
+                    "high": {"metric": normalize_canonical_metric_for_data("Lead Penetration"), "p": 0.70},
+                    "low":  {"metric": normalize_canonical_metric_for_data("Perfect Orders"),   "p": 0.30},
+                })
+            except Exception:
+                pass
+
         if spec.task == "inference" or ("orden" in normalize(question) or "orders" in normalize(question)):
-            if any(w in normalize(question) for w in ["crec", "aument", "sub"]):
+            if any(w in normalize(question) for w in ["crec", "crecim", "aument", "sub"]):
                 spec.metrics = [normalize_canonical_metric_for_data("Orders")]
                 if not ask_last_n_weeks(question):
                     spec.time.range = "L5W-L0W"
 
-        # Normaliza alias finales hacia nombres de tu data
+        # Asegura alias finales hacia nombres de tu data
         spec.metrics = [normalize_canonical_metric_for_data(m) for m in spec.metrics]
+
+        # Si el LLM no fijó order/top_k correctamente, tomamos del fallback
+        if not getattr(spec.ops, "order", None):
+            spec.ops.order = fallback.ops.order
+        if not getattr(spec.ops, "top_k", None):
+            spec.ops.top_k = fallback.ops.top_k
+
+        # Trend debe agrupar por 'week'
+        if spec.task == "trend" and ("week" not in (spec.group_by or [])):
+            spec.group_by = ["week"]
+
+        # Segmento: homogeneizar "Non Wealthy"
+        if spec.filters and spec.filters.zone_type == "Non-Wealthy":
+            spec.filters.zone_type = "Non Wealthy"
+
+        # FIX LLM: replicar semántica de explicit_country y limpieza por group_by=country
+        spec.context = {**(memory or {}), "explicit_country": bool(getattr(spec.filters, "country", None))}
+        if spec.group_by and "country" in (spec.group_by or []):
+            spec.filters.country = None
+
         return spec
     except Exception:
         return to_spec(question, memory)
